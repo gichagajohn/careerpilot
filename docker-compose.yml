@@ -1,0 +1,39 @@
+# CareerPilot AI — local cloud-style stack (PostgreSQL + backend)
+# Usage:  docker compose up --build
+# The backend runs `alembic upgrade head` on startup (AUTO_CREATE_TABLES=false).
+# Set real secrets in your shell or a .env file (docker compose reads .env).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-careerpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careerpilot}
+      POSTGRES_DB: ${POSTGRES_DB:-careerpilot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careerpilot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-careerpilot}:${POSTGRES_PASSWORD:-careerpilot}@db:5432/${POSTGRES_DB:-careerpilot}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in your environment}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in your environment}
+      AUTO_CREATE_TABLES: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
+      DEBUG: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/data/uploads
+
+volumes:
+  pgdata:
+  uploads:

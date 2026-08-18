@@ -1,0 +1,66 @@
+# ────────── OS junk ──────────
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ────────── Editors / IDEs ──────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ────────── Node / Next.js (frontend) ──────────
+node_modules/
+.next/
+out/
+build/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+.npm/
+.eslintcache
+coverage/
+*.log
+
+# ────────── Python (backend) ──────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+*.egg-info/
+dist/
+build/
+
+# ────────── Environment files (NEVER commit secrets) ──────────
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# ────────── Database / uploads ──────────
+*.db
+*.sqlite
+*.sqlite3
+data/
+uploads/
+storage/
+!uploads/.gitkeep
+!storage/.gitkeep
+
+# ────────── Logs ──────────
+*.log
+logs/
