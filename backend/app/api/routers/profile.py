@@ -5,8 +5,11 @@ decrypted only for the owner in the API response.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -26,25 +29,80 @@ from app.schemas.profile import (
     SkillOut,
 )
 
+logger = logging.getLogger("careerpilot.profile")
+
 router = APIRouter(prefix="/profile", tags=["profile"])
 
 
-def _active_profile(db: Session, user: User) -> MasterProfile:
-    profile = db.scalar(
-        select(MasterProfile)
-        .where(MasterProfile.user_id == user.id, MasterProfile.is_active.is_(True))
+def ensure_master_profile(db: Session, user: User) -> MasterProfile:
+    """Return this user's master profile, creating an empty one on first use.
+
+    The profile is *always* keyed on the authenticated ``user.id`` — never on
+    email — so a profile can only ever be reached by its owner.
+
+    A first-time user (registered but never having saved a profile) previously
+    got a 404 here, which deadlocked the dashboard: the only caller of
+    PUT /profile is the Profile page's edit form, and that form was never
+    rendered because the page bailed out on the 404. We now create an empty
+    placeholder row instead, and the UI shows the setup form for it.
+    """
+    profile = _select_profile(db, user)
+    if profile is not None:
+        # Self-heal a row that was left inactive: GET filtered on is_active
+        # while PUT did not, so an inactive row was invisible yet updatable.
+        if not profile.is_active:
+            profile.is_active = True
+            db.commit()
+            db.refresh(profile)
+        return profile
+
+    profile = MasterProfile(
+        user_id=user.id,
+        full_name=user.full_name or "",
+        email=user.email,
+        is_active=True,
     )
-    if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Master profile not found. Create it with PUT /profile first.",
-        )
+    db.add(profile)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another concurrent request created it first — reuse that row.
+        db.rollback()
+        profile = _select_profile(db, user)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create the master profile. Please retry.",
+            ) from None
+        return profile
+    db.refresh(profile)
     return profile
+
+
+def _select_profile(db: Session, user: User) -> MasterProfile | None:
+    """Owner-scoped lookup: active profile first, then any older/inactive row."""
+    return db.scalar(
+        select(MasterProfile)
+        .where(MasterProfile.user_id == user.id)
+        .order_by(MasterProfile.is_active.desc(), MasterProfile.id.asc())
+        .limit(1)
+    )
+
+
+def _active_profile(db: Session, user: User) -> MasterProfile:
+    """Back-compat alias — sub-resources use the same get-or-create path."""
+    return ensure_master_profile(db, user)
+
+
+def _profile_is_complete(profile: MasterProfile) -> bool:
+    """A profile is 'complete' once the user has supplied the minimum facts."""
+    return bool((profile.full_name or "").strip() and (profile.profession or "").strip())
 
 
 def _to_out(profile: MasterProfile) -> MasterProfileOut:
     out = MasterProfileOut.model_validate(profile)
     out.phone = decrypt_text(profile.phone_encrypted)
+    out.profile_complete = _profile_is_complete(profile)
     return out
 
 
@@ -55,7 +113,12 @@ def _to_out(profile: MasterProfile) -> MasterProfileOut:
 def get_profile(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> MasterProfileOut:
-    profile = _active_profile(db, current_user)
+    """Return the authenticated user's master profile.
+
+    First-time users get an empty profile (``profile_complete: false``) rather
+    than a 404, so the dashboard can render the setup form immediately.
+    """
+    profile = ensure_master_profile(db, current_user)
     return _to_out(profile)
 
 
@@ -65,12 +128,7 @@ def upsert_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MasterProfileOut:
-    profile = db.scalar(
-        select(MasterProfile).where(MasterProfile.user_id == current_user.id)
-    )
-    if profile is None:
-        profile = MasterProfile(user_id=current_user.id, full_name="")
-        db.add(profile)
+    profile = ensure_master_profile(db, current_user)
 
     data = payload.model_dump(exclude_unset=True)
     if "phone" in data:
@@ -79,7 +137,16 @@ def upsert_profile(
         setattr(profile, field, value)
     if not profile.full_name:
         profile.full_name = current_user.full_name or ""
-    db.commit()
+    profile.is_active = True
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to save master profile for user_id=%s", current_user.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not save the master profile. Please try again.",
+        ) from None
     db.refresh(profile)
     return _to_out(profile)
 
