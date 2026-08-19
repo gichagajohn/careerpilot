@@ -94,3 +94,6 @@ class MasterProfileOut(BaseModel):
     experience: list[ExperienceOut] = []
     skills: list[SkillOut] = []
     certifications: list[CertificationOut] = []
+    # False for a freshly created, not-yet-filled profile → the dashboard
+    # shows the first-time setup form instead of an empty read-only card.
+    profile_complete: bool = False
