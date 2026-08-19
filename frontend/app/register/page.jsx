@@ -1,0 +1,91 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { api, setSession } from "@/lib/api";
+import { ErrorNote } from "@/components/ui";
+
+export default function RegisterPage() {
+  const router = useRouter();
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const tokens = await api("/auth/register", {
+        method: "POST",
+        body: { full_name: fullName, email, password },
+      });
+      setSession(tokens);
+      router.replace("/");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-900 px-4">
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-6">
+          <div className="text-white text-2xl font-bold tracking-tight">
+            CareerPilot<span className="text-brand-400"> AI</span>
+          </div>
+          <div className="text-slate-400 text-sm mt-1">Create your account</div>
+        </div>
+        <form onSubmit={submit} className="card p-6 space-y-4">
+          <div>
+            <label className="label">Full name</label>
+            <input className="input" type="text" value={fullName} required
+              onChange={(e) => setFullName(e.target.value)} placeholder="Jane Doe" />
+          </div>
+          <div>
+            <label className="label">Email</label>
+            <input className="input" type="email" value={email} required
+              onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+          </div>
+          <div>
+            <label className="label">Password</label>
+            <input className="input" type="password" value={password} required
+              minLength={8}
+              onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" />
+          </div>
+          <div>
+            <label className="label">Confirm password</label>
+            <input className="input" type="password" value={confirmPassword} required
+              onChange={(e) => setConfirmPassword(e.target.value)} placeholder="••••••••" />
+          </div>
+          <ErrorNote message={error} />
+          <button className="btn-primary w-full justify-center" disabled={busy}>
+            {busy ? "Creating account…" : "Create account"}
+          </button>
+          <p className="text-xs text-slate-400 text-center">
+            Already have an account?{" "}
+            <Link href="/login" className="text-brand-400 hover:underline">
+              Sign in
+            </Link>
+          </p>
+        </form>
+      </div>
+    </div>
+  );
+}
