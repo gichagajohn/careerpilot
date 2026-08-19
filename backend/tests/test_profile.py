@@ -219,3 +219,64 @@ def test_sub_resources_work_without_explicit_profile_creation(client, auth_heade
     assert r.status_code == 201, r.text
     r = client.post("/api/v1/profile/skills", json={"name": "Python"}, headers=auth_headers)
     assert r.status_code == 201, r.text
+
+
+# ── PII encryption failure must be reported, not a bare 500 ─────
+
+
+def test_saving_a_phone_without_encryption_key_gives_a_clear_error(client, auth_headers, monkeypatch):
+    """A missing/invalid ENCRYPTION_KEY used to surface as a blank 500."""
+    from app.api.routers import profile as profile_router
+
+    def _boom(_value):
+        raise RuntimeError("ENCRYPTION_KEY is not set.")
+
+    monkeypatch.setattr(profile_router, "encrypt_text", _boom)
+
+    r = client.put(
+        "/api/v1/profile",
+        json={"full_name": "John Gichaga", "profession": "Teacher", "phone": "0114094974"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "ENCRYPTION_KEY" in detail
+    assert "clear the phone field" in detail
+    # the message must never leak the key material itself
+    assert "gAAAAA" not in detail
+
+
+def test_profile_without_a_phone_still_saves_when_encryption_is_broken(client, auth_headers, monkeypatch):
+    """The rest of the profile must not be held hostage by the phone field."""
+    from app.api.routers import profile as profile_router
+
+    def _boom(_value):
+        raise RuntimeError("ENCRYPTION_KEY is not set.")
+
+    monkeypatch.setattr(profile_router, "encrypt_text", _boom)
+
+    r = client.put(
+        "/api/v1/profile",
+        json={"full_name": "John Gichaga", "profession": "Teacher"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["profile_complete"] is True
+
+
+def test_invalid_encryption_key_is_also_handled(client, auth_headers, monkeypatch):
+    """A malformed Fernet key raises ValueError, not RuntimeError."""
+    from app.api.routers import profile as profile_router
+
+    def _boom(_value):
+        raise ValueError("Fernet key must be 32 url-safe base64-encoded bytes.")
+
+    monkeypatch.setattr(profile_router, "encrypt_text", _boom)
+
+    r = client.put(
+        "/api/v1/profile",
+        json={"full_name": "John", "phone": "0114094974"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 500
+    assert "ENCRYPTION_KEY" in r.json()["detail"]
