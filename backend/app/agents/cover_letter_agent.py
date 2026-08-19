@@ -9,21 +9,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Application, CoverLetter, Job, MasterProfile
+from app.services.profile_lookup import active_profile_for
 from app.services.cover_letter import build_cover_letter, write_letter_docx, write_letter_pdf
 from app.services.cv_generator import generated_dir
 
 logger = logging.getLogger("careerpilot.cover_letter")
 
 
-def _active_profile(db: Session) -> MasterProfile | None:
-    return db.scalar(
-        select(MasterProfile).where(MasterProfile.is_active.is_(True)).order_by(MasterProfile.id).limit(1)
-    )
+def _active_profile(db: Session, user_id: int | None = None) -> MasterProfile | None:
+    """The letter must be built from the applicant's own verified facts."""
+    return active_profile_for(db, user_id)
 
 
 def generate_cover_letter_for_application(db: Session, application: Application,
                                           user_id: int) -> CoverLetter:
-    profile = _active_profile(db)
+    profile = _active_profile(db, application.user_id)
     if profile is None:
         raise ValueError("No active master profile — create it before generating a cover letter")
 
