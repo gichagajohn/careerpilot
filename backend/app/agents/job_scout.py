@@ -7,6 +7,7 @@ Pipeline per run (spec §3, §21, §24, §15):
 The agent is polite: per-source cadence, robots.txt-aware fetching, 24h page
 cache, bounded results, and it never touches login-gated platforms directly.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,10 +27,24 @@ from app.services.sources.registry import ADAPTERS
 
 logger = logging.getLogger("careerpilot.jobscout")
 
-QUERIES_FILE = Path(__file__).resolve().parent.parent / "services" / "sources" / "queries.json"
+QUERIES_FILE = (
+    Path(__file__).resolve().parent.parent / "services" / "sources" / "queries.json"
+)
 
-# Minimum hours between runs per source cadence
-CADENCE_HOURS = {"3x": 7, "2x": 11, "daily": 20, "hourly": 1}
+# Minimum hours between runs per source cadence.
+# Semantics:
+#   "Nx"  → run N times per day (interval = 24/N hours)
+#   "daily" → every 20 hours (give a 4h buffer past 24h)
+#   "hourly" → every 1 hour
+#   anything else → fall back to a safe 12h default
+CADENCE_HOURS: dict[str, int] = {
+    "3x": 8,      # 3x per day ≈ every 8h (with buffer)
+    "2x": 12,     # 2x per day ≈ every 12h
+    "1x": 24,     # 1x per day
+    "daily": 20,  # legacy alias
+    "hourly": 1,
+}
+DEFAULT_CADENCE_HOURS = 12
 
 
 def load_queries() -> list[dict]:
@@ -45,16 +60,53 @@ def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _is_due(src: SearchSource) -> bool:
-    if not src.last_run_at:
-        return True
+def _parse_last_run(value: str | None) -> datetime | None:
+    """Parse last_run_at into a timezone-aware datetime, or None if missing/invalid."""
+    if not value:
+        return None
     try:
-        last = datetime.fromisoformat(src.last_run_at)
-    except ValueError:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    # If naive, assume UTC (DB stores naive datetimes by default in some configs)
+    if dt.tzinfo is None:
+        from datetime import timezone
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _cadence_hours(cadence: str | None) -> int:
+    """Map a cadence string to a minimum number of hours between runs."""
+    if not cadence:
+        return DEFAULT_CADENCE_HOURS
+    key = cadence.lower().strip()
+    if key in CADENCE_HOURS:
+        return CADENCE_HOURS[key]
+    # Try to parse "Nx" pattern
+    if key.endswith("x") and key[:-1].isdigit():
+        n = int(key[:-1])
+        if n > 0:
+            return max(1, 24 // n)
+    return DEFAULT_CADENCE_HOURS
+
+
+def _is_due(src: SearchSource) -> bool:
+    """Return True if this source should run now.
+
+    Rules:
+      - Disabled sources are never due.
+      - Sources that have never run are due immediately.
+      - Sources with an unparseable last_run_at are treated as "never ran" (due).
+      - Otherwise, the source is due if (now - last_run_at) >= cadence hours.
+    """
+    if not src.enabled:
+        return False
+    last = _parse_last_run(src.last_run_at)
+    if last is None:
         return True
-    hours = CADENCE_HOURS.get((src.cadence or "3x").lower(), 7)
-    elapsed = (datetime.now().astimezone() - last).total_seconds() / 3600
-    return elapsed >= hours
+    hours = _cadence_hours(src.cadence)
+    elapsed_hours = (datetime.now().astimezone() - last).total_seconds() / 3600
+    return elapsed_hours >= hours
 
 
 def _queries_for(src: SearchSource, queries: list[str] | None) -> list[str]:
@@ -75,7 +127,9 @@ def _upsert(db: Session, listing: RawListing, stats: dict) -> None:
     job_in = normalized.job
     dup = find_duplicate(db, job_in.title, job_in.organization_name, job_in.country)
     if dup is not None:
-        if attach_source(db, dup, normalized.source_name, normalized.source_type, job_in.source_url):
+        if attach_source(
+            db, dup, normalized.source_name, normalized.source_type, job_in.source_url
+        ):
             stats["duplicates"] += 1
         return
     job = Job(
@@ -161,7 +215,10 @@ def run_job_scout(
         stats["sources_run"] += 1
         logger.info(
             "JobScout %s: %d listings, %d new, %d duplicates",
-            src.name, source_stats["listings"], source_stats["new"], source_stats["dup"],
+            src.name,
+            source_stats["listings"],
+            source_stats["new"],
+            source_stats["dup"],
         )
 
     return stats
