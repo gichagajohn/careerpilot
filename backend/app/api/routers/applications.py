@@ -1,4 +1,5 @@
 """Application tracker routes + assistant (Phase 9)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +30,9 @@ logger = logging.getLogger("careerpilot.applications")
 router = APIRouter(prefix="/applications", tags=["applications"])
 
 
-def _record_event(db: Session, application_id: int, event_type: str, description: str | None = None) -> None:
+def _record_event(
+    db: Session, application_id: int, event_type: str, description: str | None = None
+) -> None:
     db.add(
         ApplicationEvent(
             application_id=application_id,
@@ -48,7 +51,9 @@ def list_applications(
     stmt = select(Application).where(Application.user_id == current_user.id)
     if status_filter:
         stmt = stmt.where(Application.status == status_filter)
-    stmt = stmt.order_by(Application.updated_at.desc().nullslast(), Application.created_at.desc())
+    stmt = stmt.order_by(
+        Application.updated_at.desc().nullslast(), Application.created_at.desc()
+    )
     return list(db.scalars(stmt).unique().all())
 
 
@@ -123,7 +128,9 @@ def assist(
         raise HTTPException(status_code=404, detail="Application not found")
 
     profile = db.scalar(
-        select(MasterProfile).where(MasterProfile.user_id == current_user.id, MasterProfile.is_active.is_(True))
+        select(MasterProfile).where(
+            MasterProfile.user_id == current_user.id, MasterProfile.is_active.is_(True)
+        )
     )
     if profile is None:
         raise HTTPException(status_code=422, detail="No active master profile")
@@ -132,13 +139,14 @@ def assist(
     if job is None:
         raise HTTPException(status_code=422, detail="Application has no linked job")
 
-    cv_path = None
+    # Resolve file paths up front — both may be None if no version is linked.
+    cv_path: str | None = None
     if app_row.cv_version_id:
         cv = db.get(CvVersion, app_row.cv_version_id)
         if cv:
             cv_path = cv.file_path
 
-    letter_path = None
+    letter_path: str | None = None
     if app_row.cover_letter_id:
         cl = db.get(CoverLetter, app_row.cover_letter_id)
         if cl:
@@ -146,7 +154,13 @@ def assist(
 
     try:
         result = asyncio.run(
-            assist_application(profile, current_user.email, job.application_url or "", cv_pathh, letter_path)
+            assist_application(
+                profile,
+                current_user.email,
+                job.application_url or "",
+                cv_path,
+                letter_path,
+            )
         )
     except Exception as exc:
         logger.exception("Application assistant failed")
@@ -154,10 +168,13 @@ def assist(
 
     if app_row.status != "APPLIED":
         app_row.status = "READY FOR REVIEW"
-        db.add(ApplicationEvent(
-            application_id=app_row.id, event_type="ASSISTANT_RUN",
-            description=f"Assistant scanned and filled {len(result.get('fields', []))} fields",
-        ))
+        db.add(
+            ApplicationEvent(
+                application_id=app_row.id,
+                event_type="ASSISTANT_RUN",
+                description=f"Assistant scanned and filled {len(result.get('fields', []))} fields",
+            )
+        )
         db.commit()
 
     return result
