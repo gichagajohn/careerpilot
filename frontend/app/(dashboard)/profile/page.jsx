@@ -4,6 +4,16 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { useAsync, Spinner, ErrorNote, Badge } from "@/components/ui";
 
+const EMPTY = {
+  full_name: "", nationality: "", location: "", phone: "",
+  email: "", profession: "", summary: "", professional_registration: "",
+};
+
+// A profile the API could not return (older backend returning 404) is treated
+// as "not created yet" — the setup form is shown instead of a dead-end error.
+const isMissingProfile = (message) =>
+  typeof message === "string" && /profile not found/i.test(message);
+
 export default function ProfilePage() {
   const profile = useAsync(() => api("/profile"));
   const [form, setForm] = useState(null);
@@ -13,18 +23,16 @@ export default function ProfilePage() {
 
   const start = () => {
     const p = profile.data || {};
-    setForm({
-      full_name: p.full_name || "", nationality: p.nationality || "", location: p.location || "",
-      phone: p.phone || "", email: p.email || "", profession: p.profession || "",
-      summary: p.summary || "", professional_registration: p.professional_registration || "",
-    });
+    setForm({ ...EMPTY, ...Object.fromEntries(
+      Object.keys(EMPTY).map((k) => [k, p[k] || ""])
+    ) });
   };
 
   const save = async (e) => {
     e.preventDefault();
     setSaving(true); setErr(""); setMsg("");
     try {
-      await api("/profile", { method: "PUT", body: form });
+      await api("/profile", { method: "PUT", body: form || setupForm });
       setMsg("Profile saved — this is the single source of truth for all generated documents.");
       setForm(null);
       profile.reload();
@@ -35,11 +43,19 @@ export default function ProfilePage() {
     }
   };
 
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const set = (k) => (e) => setForm({ ...(form || setupForm), [k]: e.target.value });
 
   if (profile.loading) return <Spinner />;
-  if (profile.error) return <ErrorNote message={profile.error} />;
+  // A missing profile is a first-run state, not an error: fall through to the
+  // setup form so the user can create it. Real failures still surface.
+  if (profile.error && !isMissingProfile(profile.error))
+    return <ErrorNote message={profile.error} />;
+
   const p = profile.data;
+  const needsSetup = !p || p.profile_complete === false;
+  const setupForm = form || (needsSetup ? { ...EMPTY, ...(p ? Object.fromEntries(
+    Object.keys(EMPTY).map((k) => [k, p[k] || ""])
+  ) : {}) } : null);
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -48,26 +64,34 @@ export default function ProfilePage() {
           <h1 className="text-2xl font-bold text-slate-900">Master Profile</h1>
           <p className="text-sm text-slate-500">Only verified facts — never changed by generated documents.</p>
         </div>
-        {!form && <button className="btn-primary" onClick={start}>Edit</button>}
+        {!setupForm && <button className="btn-primary" onClick={start}>Edit</button>}
       </div>
       {msg && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{msg}</div>}
+      {needsSetup && !msg && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Welcome! Your master profile is empty. Fill in the details below to finish setting it up —
+          everything CareerPilot generates is based only on these verified facts.
+        </div>
+      )}
       <ErrorNote message={err} />
 
-      {form ? (
+      {setupForm ? (
         <form onSubmit={save} className="card p-5 space-y-3">
           <div className="grid sm:grid-cols-2 gap-3">
-            <div><label className="label">Full name</label><input className="input" value={form.full_name} onChange={set("full_name")} required /></div>
-            <div><label className="label">Nationality</label><input className="input" value={form.nationality} onChange={set("nationality")} /></div>
-            <div><label className="label">Location</label><input className="input" value={form.location} onChange={set("location")} /></div>
-            <div><label className="label">Phone</label><input className="input" value={form.phone} onChange={set("phone")} /></div>
-            <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={set("email")} /></div>
-            <div><label className="label">Profession</label><input className="input" value={form.profession} onChange={set("profession")} /></div>
+            <div><label className="label">Full name</label><input className="input" value={setupForm.full_name} onChange={set("full_name")} required /></div>
+            <div><label className="label">Nationality</label><input className="input" value={setupForm.nationality} onChange={set("nationality")} /></div>
+            <div><label className="label">Location</label><input className="input" value={setupForm.location} onChange={set("location")} /></div>
+            <div><label className="label">Phone</label><input className="input" value={setupForm.phone} onChange={set("phone")} /></div>
+            <div><label className="label">Email</label><input className="input" type="email" value={setupForm.email} onChange={set("email")} /></div>
+            <div><label className="label">Profession</label><input className="input" value={setupForm.profession} onChange={set("profession")} /></div>
           </div>
-          <div><label className="label">Professional registration</label><input className="input" value={form.professional_registration} onChange={set("professional_registration")} /></div>
-          <div><label className="label">Summary</label><textarea className="input" rows={3} value={form.summary} onChange={set("summary")} /></div>
+          <div><label className="label">Professional registration</label><input className="input" value={setupForm.professional_registration} onChange={set("professional_registration")} /></div>
+          <div><label className="label">Summary</label><textarea className="input" rows={3} value={setupForm.summary} onChange={set("summary")} /></div>
           <div className="flex gap-2">
-            <button className="btn-primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-            <button type="button" className="btn-secondary" onClick={() => setForm(null)}>Cancel</button>
+            <button className="btn-primary" disabled={saving}>{saving ? "Saving…" : needsSetup ? "Create profile" : "Save"}</button>
+            {!needsSetup && (
+              <button type="button" className="btn-secondary" onClick={() => setForm(null)}>Cancel</button>
+            )}
           </div>
         </form>
       ) : (
