@@ -5,22 +5,25 @@ target-version = "py312"
 line-length = 100
 
 [lint]
-# Rules that catch real bugs — keep these enabled
+# Select real bug-catchers
 select = [
     "E",    # pycodestyle errors
     "F",    # pyflakes (undefined names, unused imports)
     "W",    # pycodestyle warnings
-    "B",    # bugbear (real bugs only — we'll pick selectively)
-    "UP",   # pyupgrade (helpful modernization)
+    "B",    # bugbear
+    "UP",   # pyupgrade
 ]
 
 # Disable noisy rules that don't indicate real bugs
 ignore = [
     "E501",    # line too long (formatter's job)
+    "E741",    # ambiguous variable name 'l'
+    "W292",    # no newline at end of file (IDE/editor handles it)
     "I001",    # import sorting (formatter's job)
     "F401",    # imported but unused (handled by IDE)
     "F841",    # local variable assigned but never used
     "UP037",   # quoted type annotations — fine in modern Python
+    "UP047",   # generic function should use type parameters — stylistic
     "B008",    # FastAPI Depends() in defaults — this IS the FastAPI pattern
     "BLE001",  # blind except Exception — intentional in scrapers/adapters
     "DTZ005",  # datetime.now() without tz
