@@ -237,55 +237,6 @@ DEMO_SCHOLARSHIPS = [
     ),
 ]
 
-# Default discovery sources (Phase 2: JobScout). Cadence is per-source:
-#   3x  = every scheduled run (3×/day default)
-#   2x  = twice a day
-#   daily = once a day (used for quota-limited APIs like Adzuna)
-DEFAULT_SOURCES = [
-    {"name": "adzuna", "kind": "API", "url": "https://api.adzuna.com/v1/api/jobs", "category": "jobs", "cadence": "daily",
-     "notes": "Official Adzuna API (free tier). Needs ADZUNA_APP_ID/KEY. Core queries only."},
-    {"name": "remotive", "kind": "API", "url": "https://remotive.com/api/remote-jobs", "category": "jobs", "cadence": "3x",
-     "notes": "Remote jobs API (free, no key)."},
-    {"name": "remoteok", "kind": "API", "url": "https://remoteok.com/api", "category": "jobs", "cadence": "3x",
-     "notes": "Remote tech jobs API (free, no key)."},
-    {"name": "arbeitnow", "kind": "API", "url": "https://www.arbeitnow.com/api/job-board-api", "category": "jobs", "cadence": "3x",
-     "notes": "Europe-leaning job feed (free, no key)."},
-    {"name": "websearch", "kind": "SEARCH", "url": None, "category": "jobs", "cadence": "2x",
-     "notes": "Web search (Google CSE / Serper / Tavily) — discovery only, no scraping of banned sites."},
-    {"name": "rss", "kind": "RSS", "url": "https://reliefweb.int/jobs/rss.xml?search%5Bvalue%5D%5B0%5D=education", "category": "jobs", "cadence": "2x",
-     "notes": "ReliefWeb education jobs feed. Add more feeds (UN, schools) in the UI/DB."},
-]
-
-# Default scholarship sources (Phase 3: ScholarshipScout)
-DEFAULT_SCHOLARSHIP_SOURCES = [
-    {"name": "websearch", "kind": "SEARCH", "url": None, "category": "scholarships", "cadence": "daily",
-     "notes": "Web search for Master's scholarships (fully funded / Kenya / Africa variants)."},
-    {"name": "rss", "kind": "RSS", "url": "https://opportunitiesforyouth.org/feed/", "category": "scholarships", "cadence": "daily",
-     "notes": "Opportunities for Youth feed (scholarships + opportunities for Africans)."},
-    {"name": "scholarship_pages", "kind": "FETCH", "url": None, "category": "scholarships", "cadence": "daily",
-     "notes": "Official programme pages (DAAD, Erasmus+, Chevening, Commonwealth, Mastercard, AIMS...). "
-              "FULLY FUNDED is only accepted with explicit official evidence (spec §4)."},
-    {"name": "scholarship_daad", "kind": "FETCH", "url": "https://www.daad.de/en/study-and-research-in-germany/scholarships/", "category": "scholarships", "cadence": "daily",
-     "notes": "DAAD official scholarships page."},
-    {"name": "scholarship_erasmus_mundus", "kind": "FETCH", "url": "https://www.eacea.ec.europa.eu/scholarships/erasmus-mundus-catalogue_en", "category": "scholarships", "cadence": "daily",
-     "notes": "Erasmus Mundus catalogue (fully funded joint Master's)."},
-    {"name": "scholarship_chevening", "kind": "FETCH", "url": "https://www.chevening.org/scholarships/", "category": "scholarships", "cadence": "daily",
-     "notes": "Chevening Scholarships (UK government)."},
-    {"name": "scholarship_commonwealth", "kind": "FETCH", "url": "https://cscuk.fcdo.gov.uk/scholarships/", "category": "scholarships", "cadence": "daily",
-     "notes": "Commonwealth Scholarship Commission (UK)."},
-    {"name": "scholarship_mastercard", "kind": "FETCH", "url": "https://mastercardfdn.org/all/scholarships/", "category": "scholarships", "cadence": "daily",
-     "notes": "Mastercard Foundation Scholars Program."},
-    {"name": "scholarship_aims", "kind": "FETCH", "url": "https://nexteinstein.org/", "category": "scholarships", "cadence": "daily",
-     "notes": "AIMS Next Einstein (African math sciences MSc)."},
-    {"name": "scholarship_mandela_rhodes", "kind": "FETCH", "url": "https://mandelarhodes.org/", "category": "scholarships", "cadence": "daily",
-     "notes": "Mandela Rhodes Scholarships."},
-    {"name": "scholarship_fulbright", "kind": "FETCH", "url": "https://foreign.fulbrightonline.org/", "category": "scholarships", "cadence": "daily",
-     "notes": "Fulbright Foreign Student Program."},
-    {"name": "scholarship_gates_cambridge", "kind": "FETCH", "url": "https://www.gatescambridge.org/", "category": "scholarships", "cadence": "daily",
-     "notes": "Gates Cambridge Scholarships."},
-]
-
-
 DEFAULT_SETTINGS = {
     "priority_weights": '{"eligibility": 0.30, "relevance": 0.25, "growth": 0.15, '
                         '"compensation": 0.10, "deadline": 0.10, "org_quality": 0.10}',
@@ -312,17 +263,13 @@ def ensure_notification_prefs(db, user_id: int) -> bool:
     return False
 
 
-def ensure_default_sources(db) -> int:
-    added = 0
-    for row in DEFAULT_SOURCES + DEFAULT_SCHOLARSHIP_SOURCES:
-        exists = db.query(SearchSource).filter(
-            SearchSource.name == row["name"], SearchSource.category == row["category"]
-        ).first()
-        if exists is None:
-            db.add(SearchSource(**row))
-            added += 1
-    db.commit()
-    return added
+# Source definitions now live in the application so that any deployment gets
+# them on startup, seeded or not. Re-exported here for backwards compatibility.
+from app.services.sources.defaults import (  # noqa: E402
+    DEFAULT_JOB_SOURCES as DEFAULT_SOURCES,
+    DEFAULT_SCHOLARSHIP_SOURCES,
+    ensure_default_sources,
+)
 
 
 def main() -> None:
