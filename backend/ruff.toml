@@ -18,10 +18,13 @@ select = [
 ignore = [
     "E501",    # line too long (formatter's job)
     "E741",    # ambiguous variable name 'l'
+    "W291",    # trailing whitespace (cosmetic)
     "W292",    # no newline at end of file (IDE/editor handles it)
+    "W293",    # whitespace on blank line (cosmetic)
     "I001",    # import sorting (formatter's job)
     "F401",    # imported but unused (handled by IDE)
     "F841",    # local variable assigned but never used
+    "UP017",   # use datetime.UTC alias (Python 3.11+ syntactic sugar)
     "UP037",   # quoted type annotations — fine in modern Python
     "UP047",   # generic function should use type parameters — stylistic
     "B008",    # FastAPI Depends() in defaults — this IS the FastAPI pattern
