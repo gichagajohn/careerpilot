@@ -36,10 +36,39 @@ logger = logging.getLogger("careerpilot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _check_encryption_key() -> None:
+    """Warn at startup if PII encryption is unusable.
+
+    Without a valid key, saving a phone number fails at request time with a
+    500. Surfacing it here means the problem is visible in the deploy log
+    instead of the first time a user tries to save their profile.
+    The key itself is never logged.
+    """
+    from cryptography.fernet import Fernet
+
+    key = get_settings().encryption_key
+    if not key:
+        logger.error(
+            "ENCRYPTION_KEY is not set — phone numbers cannot be saved. "
+            "Generate one with `python scripts/gen_key.py` and set it in the environment."
+        )
+        return
+    try:
+        Fernet(key.encode())
+    except (ValueError, TypeError):
+        logger.error(
+            "ENCRYPTION_KEY is not a valid Fernet key — phone numbers cannot be saved. "
+            "Regenerate it with `python scripts/gen_key.py`."
+        )
+    else:
+        logger.info("PII encryption key loaded")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    _check_encryption_key()
     if settings.auto_create_tables:
         init_db()
         logger.info("Tables ensured (auto_create_tables=true)")
