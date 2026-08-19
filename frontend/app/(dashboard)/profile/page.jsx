@@ -28,6 +28,7 @@ export default function ProfilePage() {
 
   // ── CV import state ──────────────────────────────────────────
   const fileRef = useRef(null);
+  const errRef = useRef(null);
   const [importing, setImporting] = useState(false);
   const [cvFields, setCvFields] = useState([]);      // field names filled from the CV
   const [cvNotice, setCvNotice] = useState("");
@@ -131,7 +132,12 @@ export default function ProfilePage() {
       setCvWarnings([]);
       profile.reload();
     } catch (ex) {
-      setErr(ex.message);
+      setErr(ex.message || "Could not save your profile. Please try again.");
+      // The form is long: bring the message to the user instead of leaving it
+      // off-screen at the top of the page.
+      requestAnimationFrame(() =>
+        errRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+      );
     } finally {
       setSaving(false);
     }
@@ -267,6 +273,9 @@ export default function ProfilePage() {
             </div>
           )}
 
+          <div ref={errRef}>
+            <ErrorNote message={err} />
+          </div>
           <div className="flex gap-2">
             <button className="btn-primary" disabled={saving}>{saving ? "Saving…" : needsSetup ? "Create profile" : "Save"}</button>
             {!needsSetup && (
