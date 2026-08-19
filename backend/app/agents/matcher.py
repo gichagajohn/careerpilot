@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models import Job, MasterProfile, Scholarship, Setting
 from app.services.notifications import notify_deadline, notify_high_match
+from app.services.profile_lookup import active_profile_for
 from app.services.scoring import (
     DEFAULT_PRIORITY_WEIGHTS,
     career_growth_score,
@@ -51,10 +52,9 @@ def _get_weights(db: Session) -> dict[str, float]:
     return dict(DEFAULT_PRIORITY_WEIGHTS)
 
 
-def _active_profile(db: Session) -> MasterProfile | None:
-    return db.scalar(
-        select(MasterProfile).where(MasterProfile.is_active.is_(True)).order_by(MasterProfile.id).limit(1)
-    )
+def _active_profile(db: Session, user_id: int | None = None) -> MasterProfile | None:
+    """The profile to score against — this user's own, never another's."""
+    return active_profile_for(db, user_id)
 
 
 def score_job(db: Session, profile: MasterProfile, job: Job, weights: dict[str, float],
@@ -129,9 +129,12 @@ def run_matcher_pass(db: Session, entity_type: str | None = None, force: bool = 
     from app.models import Notification
     notifications_before = db.scalar(select(func.count(Notification.id))) or 0
 
-    profile = _active_profile(db)
+    profile = _active_profile(db, user_id)
     if profile is None:
-        stats["errors"].append("No active master profile — cannot score")
+        stats["errors"].append(
+            "No usable master profile — fill in your profile (at least full name "
+            "and profession) before scoring opportunities."
+        )
         return stats
     weights = _get_weights(db)
 
