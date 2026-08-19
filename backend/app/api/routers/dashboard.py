@@ -65,7 +65,11 @@ def summary(
         or 0
     )
 
-    apps = db.scalars(select(Application)).all()
+    # Opportunities are a shared discovery pool, but applications belong to a
+    # single user and must never be counted across accounts.
+    apps = db.scalars(
+        select(Application).where(Application.user_id == current_user.id)
+    ).all()
     apps_total = len(apps)
     apps_interviews = sum(1 for a in apps if a.status == "INTERVIEW")
     apps_offers = sum(1 for a in apps if a.status == "OFFER")
