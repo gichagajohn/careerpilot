@@ -6,19 +6,32 @@ decrypted only for the owner in the API response.
 from __future__ import annotations
 
 import logging
+import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import get_settings
 from app.core.crypto import decrypt_text, encrypt_text
 from app.core.db import get_db
-from app.models import Certification, Education, Experience, MasterProfile, Skill, User
+from app.models import (
+    Certification,
+    Document,
+    DocumentExtraction,
+    Education,
+    Experience,
+    MasterProfile,
+    Skill,
+    User,
+)
 from app.schemas.profile import (
     CertificationIn,
     CertificationOut,
+    CvImportResult,
     EducationIn,
     EducationOut,
     ExperienceIn,
@@ -27,6 +40,12 @@ from app.schemas.profile import (
     MasterProfileOut,
     SkillIn,
     SkillOut,
+)
+from app.services.cv_import import (
+    SUPPORTED_SUFFIXES,
+    CvImportError,
+    extract_text,
+    parse_cv,
 )
 
 logger = logging.getLogger("careerpilot.profile")
@@ -149,6 +168,105 @@ def upsert_profile(
         ) from None
     db.refresh(profile)
     return _to_out(profile)
+
+
+# ── CV import (prefill only — never writes the profile) ─────────
+
+
+@router.post("/import-cv", response_model=CvImportResult)
+async def import_cv(
+    file: UploadFile,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CvImportResult:
+    """Read an uploaded CV and return suggested master-profile values.
+
+    This endpoint is deliberately read-only with respect to the master
+    profile: it returns suggestions for the user to review and submit via
+    PUT /profile. Nothing is promoted automatically, per the rule on
+    DocumentExtraction.
+    """
+    settings = get_settings()
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported CV format {suffix or '(none)'}. "
+                   f"Upload one of: {', '.join(sorted(SUPPORTED_SUFFIXES))}",
+        )
+
+    upload_dir = settings.upload_dir
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_dir / f"{uuid.uuid4().hex}{suffix}"
+
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File exceeds the {settings.max_upload_mb} MB limit",
+                    )
+                out.write(chunk)
+
+        if size == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The uploaded file is empty.",
+            )
+
+        try:
+            text = extract_text(dest, suffix)
+        except CvImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from None
+
+        result = parse_cv(text)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dest.unlink(missing_ok=True)
+        logger.exception("CV import failed for user_id=%s", current_user.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not process this CV. Please try another file.",
+        ) from None
+
+    # Keep the CV alongside the user's other documents, with an audit trail of
+    # what was proposed. Extractions stay UNVERIFIED until the user saves.
+    document = Document(
+        user_id=current_user.id,
+        file_name=file.filename or dest.name,
+        file_path=str(dest),
+        doc_type="CV",
+        extraction_status="PENDING",
+    )
+    db.add(document)
+    db.flush()
+    for field_name, value in result.profile.model_dump().items():
+        if isinstance(value, str) and value.strip():
+            db.add(
+                DocumentExtraction(
+                    document_id=document.id,
+                    field_name=field_name,
+                    field_value=value[:2000],
+                    status="UNVERIFIED",
+                )
+            )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to record CV document for user_id=%s", current_user.id)
+    else:
+        result.document_id = document.id
+
+    return result
 
 
 # ── Education ───────────────────────────────────────────────────
