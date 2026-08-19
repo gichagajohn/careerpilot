@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.routers.profile import ensure_master_profile
 from app.core.db import get_db
 from app.core.security import (
     create_access_token,
@@ -35,6 +36,9 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenPa
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Every user owns exactly one master profile, created empty at signup and
+    # bound to their user id. Prevents the "profile not found" dead end.
+    ensure_master_profile(db, user)
     return TokenPair(
         access_token=create_access_token(str(user.id)),
         refresh_token=create_refresh_token(str(user.id)),
