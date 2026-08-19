@@ -118,8 +118,104 @@ def test_education_experience_skills_certifications(client, auth_headers):
         json={"email": "other@example.com", "password": "StrongPass123", "full_name": "Other"},
     )
     other_headers = {"Authorization": f"Bearer {r2.json()['access_token']}"}
-    assert client.get("/api/v1/profile", headers=other_headers).status_code == 404
+    # The second user gets their OWN empty profile (not a 404, and never the
+    # first user's data), and still cannot touch the first user's entries.
+    other = client.get("/api/v1/profile", headers=other_headers)
+    assert other.status_code == 200
+    assert other.json()["id"] != body["id"]
+    assert other.json()["education"] == []
+    assert other.json()["profile_complete"] is False
     assert (
         client.put(f"/api/v1/profile/education/{edu_id}", json={}, headers=other_headers).status_code
         == 404
     )
+
+
+# ── Regression tests for the "Master profile not found" bug ─────────────
+
+
+def test_first_login_gets_empty_profile_not_404(client, auth_headers):
+    """A freshly registered user must be able to open the Profile page."""
+    r = client.get("/api/v1/profile", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["profile_complete"] is False
+    assert body["education"] == [] and body["skills"] == []
+
+
+def test_first_time_setup_then_profile_loads_normally(client, auth_headers):
+    """The onboarding flow: empty profile → PUT → complete profile."""
+    assert client.get("/api/v1/profile", headers=auth_headers).json()["profile_complete"] is False
+
+    r = _put_profile(client, auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["profile_complete"] is True
+
+    r = client.get("/api/v1/profile", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["profile_complete"] is True
+    assert r.json()["phone"] == "0114094974"
+
+
+def test_profile_is_bound_to_authenticated_user_id(client, auth_headers, db_session):
+    """profile.user_id must equal the authenticated user's id (not email)."""
+    from app.models import MasterProfile, User
+
+    _put_profile(client, auth_headers)
+    me = client.get("/api/v1/auth/me", headers=auth_headers).json()
+    profile = db_session.query(MasterProfile).filter_by(user_id=me["id"]).one()
+    assert profile.user_id == me["id"]
+    assert db_session.get(User, profile.user_id).email == me["email"]
+
+
+def test_each_user_gets_a_separate_profile(client, auth_headers):
+    """Two users must never share or see each other's master profile."""
+    _put_profile(client, auth_headers, full_name="User One", profession="Teacher")
+
+    r2 = client.post(
+        "/api/v1/auth/register",
+        json={"email": "second@example.com", "password": "StrongPass123", "full_name": "Second"},
+    )
+    h2 = {"Authorization": f"Bearer {r2.json()['access_token']}"}
+    p2 = client.get("/api/v1/profile", headers=h2).json()
+    assert p2["full_name"] == "Second"
+    assert p2["profession"] is None  # not User One's data
+
+    _put_profile(client, h2, full_name="User Two", profession="Engineer")
+    assert client.get("/api/v1/profile", headers=auth_headers).json()["full_name"] == "User One"
+    assert client.get("/api/v1/profile", headers=h2).json()["full_name"] == "User Two"
+
+
+def test_repeated_get_does_not_create_duplicate_profiles(client, auth_headers, db_session):
+    from app.models import MasterProfile
+
+    for _ in range(3):
+        assert client.get("/api/v1/profile", headers=auth_headers).status_code == 200
+    assert db_session.query(MasterProfile).count() == 1
+
+
+def test_inactive_profile_is_recovered_not_hidden(client, auth_headers, db_session):
+    """An is_active=False row used to be invisible to GET but writable by PUT."""
+    from app.models import MasterProfile
+
+    _put_profile(client, auth_headers)
+    profile = db_session.query(MasterProfile).one()
+    profile.is_active = False
+    db_session.commit()
+
+    r = client.get("/api/v1/profile", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["full_name"] == "John Gichaga"
+    assert db_session.query(MasterProfile).count() == 1
+
+
+def test_sub_resources_work_without_explicit_profile_creation(client, auth_headers):
+    """Education/skills no longer 404 for a user who never called PUT /profile."""
+    r = client.post(
+        "/api/v1/profile/education",
+        json={"degree": "B.Ed", "institution": "Gretsa University"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+    r = client.post("/api/v1/profile/skills", json={"name": "Python"}, headers=auth_headers)
+    assert r.status_code == 201, r.text
