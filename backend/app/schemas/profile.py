@@ -97,3 +97,39 @@ class MasterProfileOut(BaseModel):
     # False for a freshly created, not-yet-filled profile → the dashboard
     # shows the first-time setup form instead of an empty read-only card.
     profile_complete: bool = False
+
+
+# ── CV import (master-profile prefill) ──────────────────────────
+#
+# These are SUGGESTIONS extracted from an uploaded CV. They are returned to
+# the user for review and are never written to the master profile directly —
+# the user confirms them by submitting the normal PUT /profile form.
+
+
+class CvSuggestedProfile(BaseModel):
+    """Top-level master-profile fields proposed from a CV."""
+
+    full_name: str | None = None
+    nationality: str | None = None
+    location: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    profession: str | None = None
+    summary: str | None = None
+    professional_registration: str | None = None
+
+
+class CvImportResult(BaseModel):
+    """What POST /profile/import-cv returns."""
+
+    profile: CvSuggestedProfile = CvSuggestedProfile()
+    education: list[EducationIn] = []
+    experience: list[ExperienceIn] = []
+    skills: list[SkillIn] = []
+    # Names of the top-level fields actually found, so the UI can highlight
+    # exactly which inputs were auto-filled from the CV.
+    filled_fields: list[str] = []
+    # "llm" or "fallback" — lets the user know a no-API-key parse was used.
+    parser: str = "fallback"
+    document_id: int | None = None
+    warnings: list[str] = []
