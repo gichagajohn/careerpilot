@@ -151,7 +151,23 @@ def upsert_profile(
 
     data = payload.model_dump(exclude_unset=True)
     if "phone" in data:
-        data["phone_encrypted"] = encrypt_text(data.pop("phone"))
+        try:
+            data["phone_encrypted"] = encrypt_text(data.pop("phone"))
+        except (RuntimeError, ValueError, TypeError):
+            # ENCRYPTION_KEY missing or malformed. Never log the key itself.
+            logger.error(
+                "Phone encryption failed for user_id=%s: ENCRYPTION_KEY is missing "
+                "or not a valid Fernet key", current_user.id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Your phone number could not be stored securely because the "
+                    "server's encryption key (ENCRYPTION_KEY) is missing or invalid. "
+                    "Set it on the server, or clear the phone field to save the rest "
+                    "of your profile."
+                ),
+            ) from None
     for field, value in data.items():
         setattr(profile, field, value)
     if not profile.full_name:
