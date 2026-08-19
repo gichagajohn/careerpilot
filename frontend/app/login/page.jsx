@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api, setSession } from "@/lib/api";
 import { ErrorNote } from "@/components/ui";
 
@@ -52,7 +53,10 @@ export default function LoginPage() {
             {busy ? "Signing in…" : "Sign in"}
           </button>
           <p className="text-xs text-slate-400 text-center">
-            Seeded login: johngichaga8@gmail.com / ChangeMe123!
+            Don&apos;t have an account?{" "}
+            <Link href="/register" className="text-brand-400 hover:underline">
+              Create one
+            </Link>
           </p>
         </form>
       </div>
