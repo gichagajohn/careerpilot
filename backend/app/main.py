@@ -28,8 +28,9 @@ from app.api.routers import (
     scholarships,
 )
 from app.core.config import get_settings
-from app.core.db import init_db
+from app.core.db import SessionLocal, init_db
 from app.services.scheduler import start_scheduler, stop_scheduler
+from app.services.sources.defaults import bootstrap_sources
 
 logger = logging.getLogger("careerpilot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -42,6 +43,10 @@ async def lifespan(app: FastAPI):
     if settings.auto_create_tables:
         init_db()
         logger.info("Tables ensured (auto_create_tables=true)")
+    # Discovery sources drive JobScout/ScholarshipScout. Without them the
+    # agents silently find nothing, so provision the defaults on first run.
+    with SessionLocal() as db:
+        bootstrap_sources(db)
     start_scheduler()
     yield
     stop_scheduler()
