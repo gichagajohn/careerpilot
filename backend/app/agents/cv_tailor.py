@@ -17,20 +17,20 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_text
 from app.models import Application, CvVersion, Job, MasterProfile
+from app.services.profile_lookup import active_profile_for
 from app.services.cv_generator import build_cv, generated_dir, write_docx, write_pdf
 
 logger = logging.getLogger("careerpilot.cv_tailor")
 
 
-def _active_profile(db: Session) -> MasterProfile | None:
-    return db.scalar(
-        select(MasterProfile).where(MasterProfile.is_active.is_(True)).order_by(MasterProfile.id).limit(1)
-    )
+def _active_profile(db: Session, user_id: int | None = None) -> MasterProfile | None:
+    """The CV must be built from the applicant's own verified facts."""
+    return active_profile_for(db, user_id)
 
 
 def generate_cv_for_application(db: Session, application: Application,
                                 user_id: int, version_label: str | None = None) -> CvVersion:
-    profile = _active_profile(db)
+    profile = _active_profile(db, application.user_id)
     if profile is None:
         raise ValueError("No active master profile — create it before generating a CV")
 
