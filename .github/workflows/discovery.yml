@@ -1,18 +1,23 @@
 name: Discovery agents
 
-# Runs JobScout, ScholarshipScout, the Verifier and the Matcher against the
-# deployed API, so the dashboard keeps filling up without the backend needing
-# to stay awake. The first request also wakes a sleeping Render free service.
+# Runs the discovery pipeline against the deployed API so the dashboard keeps
+# filling up without the backend needing to stay awake. The first request also
+# wakes a sleeping Render free service.
 #
-# Times are UTC. Nairobi is UTC+3, so:
-#   05:00 UTC = 08:00 EAT   |   13:00 UTC = 16:00 EAT   |   21:00 UTC = 00:00 EAT
+# Sources are run ONE AT A TIME. A full sweep can take several minutes, and
+# hosting proxies (Render included) kill HTTP requests at ~100 seconds,
+# returning a plain-text "upstream request timeout" that is not JSON. Splitting
+# the sweep keeps each request short. If one still times out, the backend
+# carries on processing it server-side, so we log a warning and continue
+# instead of failing the whole run.
+#
+# Times are UTC. Nairobi is UTC+3:
+#   05:00 UTC = 08:00 EAT | 13:00 UTC = 16:00 EAT | 21:00 UTC = 00:00 EAT
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   API_BASE_URL     e.g. https://careerpilot-api.onrender.com   (no trailing slash)
-#   API_EMAIL        the account the agents should run as
-#   API_PASSWORD     that account's password
-#
-# You can also run this on demand: Actions -> Discovery agents -> Run workflow.
+#   API_BASE_URL   e.g. https://careerpilot-api.onrender.com   (no trailing slash)
+#   API_EMAIL      the account the agents run as
+#   API_PASSWORD   that account's password
 
 on:
   schedule:
@@ -32,34 +37,31 @@ jobs:
   discover:
     name: Run discovery pipeline
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     env:
       BASE: ${{ secrets.API_BASE_URL }}
+      JOB_SOURCES: "remotive remoteok arbeitnow adzuna websearch rss"
+      SCHOLARSHIP_SOURCES: >-
+        websearch rss scholarship_daad scholarship_erasmus_mundus
+        scholarship_chevening scholarship_commonwealth scholarship_mastercard
+        scholarship_aims scholarship_mandela_rhodes scholarship_fulbright
+        scholarship_gates_cambridge scholarship_pages
 
     steps:
       - name: Check secrets are configured
         run: |
           missing=0
-          for name in API_BASE_URL API_EMAIL API_PASSWORD; do
-            case "$name" in
-              API_BASE_URL) value="${{ secrets.API_BASE_URL }}" ;;
-              API_EMAIL)    value="${{ secrets.API_EMAIL }}" ;;
-              API_PASSWORD) value="${{ secrets.API_PASSWORD }}" ;;
-            esac
-            if [ -z "$value" ]; then echo "::error::Missing repository secret: $name"; missing=1; fi
-          done
+          [ -n "${{ secrets.API_BASE_URL }}" ] || { echo "::error::Missing secret: API_BASE_URL"; missing=1; }
+          [ -n "${{ secrets.API_EMAIL }}" ]    || { echo "::error::Missing secret: API_EMAIL"; missing=1; }
+          [ -n "${{ secrets.API_PASSWORD }}" ] || { echo "::error::Missing secret: API_PASSWORD"; missing=1; }
           [ "$missing" -eq 0 ] || exit 1
 
       - name: Wake the API and wait for it to be healthy
         run: |
-          # A free Render service can take up to ~60s to cold start.
           for attempt in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$BASE/health" || true)
-            if [ "$code" = "200" ]; then
-              echo "API healthy after ${attempt} attempt(s)"
-              exit 0
-            fi
+            if [ "$code" = "200" ]; then echo "API healthy after ${attempt} attempt(s)"; exit 0; fi
             echo "attempt ${attempt}: /health returned ${code:-no response}; retrying in 10s"
             sleep 10
           done
@@ -74,56 +76,103 @@ jobs:
           payload=$(jq -nc --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}')
           body=$(curl -s --max-time 60 -X POST "$BASE/api/v1/auth/login" \
                    -H 'Content-Type: application/json' -d "$payload")
-          token=$(printf '%s' "$body" | jq -r '.access_token // empty')
+          token=$(printf '%s' "$body" | jq -r '.access_token // empty' 2>/dev/null || true)
           if [ -z "$token" ]; then
-            # Never print the body: it could echo back credentials.
+            # Never print the body: it may echo back credentials.
             echo "::error::Login failed. Check API_EMAIL / API_PASSWORD."
             exit 1
           fi
-          # Mask the token so it can never appear in logs.
           echo "::add-mask::$token"
           echo "TOKEN=$token" >> "$GITHUB_ENV"
 
-      - name: JobScout
+      - name: JobScout (one source at a time)
         id: jobscout
         run: |
-          out=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/jobscout/run?force=true" \
-                  -H "Authorization: Bearer $TOKEN")
-          echo "$out" | jq .
-          echo "new_jobs=$(echo "$out" | jq -r '.new_jobs // 0')" >> "$GITHUB_OUTPUT"
-          echo "listings=$(echo "$out" | jq -r '.listings // 0')" >> "$GITHUB_OUTPUT"
-          sources=$(echo "$out" | jq -r '.sources_run // 0')
-          echo "sources=$sources" >> "$GITHUB_OUTPUT"
-          if [ "$sources" = "0" ]; then
-            echo "::warning::sources_run=0 — the deployed backend has no discovery sources."
+          total_new=0; total_listings=0; ran=0; timed_out=""
+          for src in $JOB_SOURCES; do
+            echo "::group::jobscout — $src"
+            body=$(curl -s --max-time 600 -X POST \
+                     "$BASE/api/v1/agents/jobscout/run?force=true&sources=$src" \
+                     -H "Authorization: Bearer $TOKEN" || true)
+            if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+              printf '%s' "$body" | jq .
+              total_new=$((total_new + $(printf '%s' "$body" | jq -r '.new_jobs // 0')))
+              total_listings=$((total_listings + $(printf '%s' "$body" | jq -r '.listings // 0')))
+              ran=$((ran + $(printf '%s' "$body" | jq -r '.sources_run // 0')))
+            else
+              # Almost always the proxy's ~100s cap. The backend keeps going.
+              echo "non-JSON response (likely a proxy timeout); continuing"
+              echo "${body:0:200}"
+              timed_out="$timed_out $src"
+            fi
+            echo "::endgroup::"
+          done
+          [ -n "$timed_out" ] && echo "::warning::Timed out at the proxy (work may still have completed):$timed_out"
+          if [ "$ran" = "0" ] && [ -z "$timed_out" ]; then
+            echo "::warning::No sources ran — the deployed backend may have no discovery sources."
           fi
+          echo "new_jobs=$total_new"     >> "$GITHUB_OUTPUT"
+          echo "listings=$total_listings" >> "$GITHUB_OUTPUT"
+          echo "sources=$ran"            >> "$GITHUB_OUTPUT"
 
-      - name: ScholarshipScout
+      - name: ScholarshipScout (one source at a time)
         id: scholarships
         if: github.event_name == 'schedule' || inputs.scholarships
         run: |
-          out=$(curl -s --max-time 1500 -X POST "$BASE/api/v1/agents/scholarshipscout/run?force=true" \
-                  -H "Authorization: Bearer $TOKEN")
-          echo "$out" | jq .
-          echo "new=$(echo "$out" | jq -r '.new_scholarships // 0')" >> "$GITHUB_OUTPUT"
+          total_new=0; timed_out=""
+          for src in $SCHOLARSHIP_SOURCES; do
+            echo "::group::scholarshipscout — $src"
+            body=$(curl -s --max-time 600 -X POST \
+                     "$BASE/api/v1/agents/scholarshipscout/run?force=true&sources=$src" \
+                     -H "Authorization: Bearer $TOKEN" || true)
+            if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+              printf '%s' "$body" | jq .
+              total_new=$((total_new + $(printf '%s' "$body" | jq -r '.new_scholarships // 0')))
+            else
+              echo "non-JSON response (likely a proxy timeout); continuing"
+              timed_out="$timed_out $src"
+            fi
+            echo "::endgroup::"
+          done
+          [ -n "$timed_out" ] && echo "::warning::Timed out at the proxy:$timed_out"
+          echo "new=$total_new" >> "$GITHUB_OUTPUT"
 
       - name: Verify
+        continue-on-error: true
         run: |
-          curl -s --max-time 900 -X POST "$BASE/api/v1/agents/verify/run" \
-            -H "Authorization: Bearer $TOKEN" | jq .
+          body=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/verify/run" \
+                   -H "Authorization: Bearer $TOKEN" || true)
+          printf '%s' "$body" | jq . || echo "non-JSON response; continuing"
 
       - name: Match against the master profile
         id: matcher
         run: |
-          out=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/matcher/run?force=true" \
-                  -H "Authorization: Bearer $TOKEN")
-          echo "$out" | jq .
-          errors=$(echo "$out" | jq -r '.errors | length')
-          if [ "$errors" != "0" ]; then
-            echo "::warning::Matcher reported: $(echo "$out" | jq -r '.errors | join("; ")')"
+          body=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/matcher/run?force=true" \
+                   -H "Authorization: Bearer $TOKEN" || true)
+          if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+            printf '%s' "$body" | jq .
+            errs=$(printf '%s' "$body" | jq -r '.errors | length')
+            [ "$errs" != "0" ] && echo "::warning::Matcher: $(printf '%s' "$body" | jq -r '.errors | join("; ")')"
+            echo "jobs=$(printf '%s' "$body" | jq -r '.jobs_scored // 0')"          >> "$GITHUB_OUTPUT"
+            echo "schol=$(printf '%s' "$body" | jq -r '.scholarships_scored // 0')" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Matcher returned a non-JSON response (likely a proxy timeout)."
+            echo "jobs=?"  >> "$GITHUB_OUTPUT"
+            echo "schol=?" >> "$GITHUB_OUTPUT"
           fi
-          echo "jobs=$(echo "$out" | jq -r '.jobs_scored // 0')" >> "$GITHUB_OUTPUT"
-          echo "schol=$(echo "$out" | jq -r '.scholarships_scored // 0')" >> "$GITHUB_OUTPUT"
+
+      - name: Dashboard totals
+        id: dash
+        if: always()
+        run: |
+          body=$(curl -s --max-time 120 "$BASE/api/v1/dashboard/summary" \
+                   -H "Authorization: Bearer $TOKEN" || true)
+          if printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+            printf '%s' "$body" | jq -c '{total_opportunities,new_opportunities,high_match_opportunities,scholarships_total}'
+            echo "total=$(printf '%s' "$body" | jq -r '.total_opportunities // 0')"      >> "$GITHUB_OUTPUT"
+            echo "high=$(printf '%s' "$body"  | jq -r '.high_match_opportunities // 0')" >> "$GITHUB_OUTPUT"
+            echo "schol=$(printf '%s' "$body" | jq -r '.scholarships_total // 0')"       >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Summary
         if: always()
@@ -131,11 +180,14 @@ jobs:
           {
             echo "### Discovery run"
             echo ""
-            echo "| Stage | Result |"
+            echo "| Metric | Value |"
             echo "| --- | --- |"
             echo "| Sources run | ${{ steps.jobscout.outputs.sources }} |"
             echo "| Listings seen | ${{ steps.jobscout.outputs.listings }} |"
             echo "| New jobs | ${{ steps.jobscout.outputs.new_jobs }} |"
             echo "| New scholarships | ${{ steps.scholarships.outputs.new }} |"
             echo "| Scored (jobs / scholarships) | ${{ steps.matcher.outputs.jobs }} / ${{ steps.matcher.outputs.schol }} |"
+            echo "| **Dashboard total** | **${{ steps.dash.outputs.total }}** |"
+            echo "| Dashboard high match | ${{ steps.dash.outputs.high }} |"
+            echo "| Dashboard scholarships | ${{ steps.dash.outputs.schol }} |"
           } >> "$GITHUB_STEP_SUMMARY"
