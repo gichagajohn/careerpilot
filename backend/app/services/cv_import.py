@@ -218,6 +218,35 @@ def _split_sections(text: str) -> dict[str, list[str]]:
     return sections
 
 
+# Keywords used when a heading is not an exact alias. CVs vary wildly
+# ("PROFESSIONAL SKILLS", "CORE SKILLS", "AREAS OF EXPERTISE"...), so an exact
+# list will always miss some. Order matters: the first match wins.
+_SECTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("education", ("education", "academic", "qualification", "schooling")),
+    ("experience", ("experience", "employment", "work history", "career history",
+                    "professional background", "teaching practice")),
+    ("skills", ("skill", "competenc", "expertise", "proficienc", "strengths")),
+    ("certifications", ("certification", "certificate", "licence", "license",
+                        "registration", "membership", "accreditation")),
+    ("summary", ("summary", "profile", "objective", "personal statement", "about me")),
+)
+
+
+def _looks_like_heading(line: str) -> bool:
+    """Heading-ish formatting: short, and capitalised or colon-terminated."""
+    stripped = line.strip()
+    if not (2 < len(stripped) <= 45):
+        return False
+    if stripped.endswith(":"):
+        return True
+    letters = [c for c in stripped if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        return True          # ALL CAPS
+    words = stripped.split()
+    # Title Case and few words, e.g. "Key Skills"
+    return len(words) <= 4 and all(w[:1].isupper() for w in words if w[:1].isalpha())
+
+
 def _match_heading(line: str) -> str | None:
     """Return the canonical section name if this line looks like a heading."""
     if len(line) > 60:
@@ -225,8 +254,16 @@ def _match_heading(line: str) -> str | None:
     cleaned = re.sub(r"[^a-z& ]", "", line.lower()).strip()
     if not cleaned:
         return None
+    # 1. exact alias (fast path, unambiguous)
     for canonical, aliases in _SECTION_ALIASES.items():
         if cleaned in aliases:
+            return canonical
+    # 2. keyword match, but only for lines that are formatted like a heading,
+    #    so a sentence such as "Skills gained during my placement" is not one.
+    if not _looks_like_heading(line):
+        return None
+    for canonical, keywords in _SECTION_KEYWORDS:
+        if any(word in cleaned for word in keywords):
             return canonical
     return None
 
