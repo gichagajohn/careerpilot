@@ -175,3 +175,43 @@ def test_dashboard_counts_opportunities(client, auth_headers, db_session):
     summary = client.get("/api/v1/dashboard/summary", headers=auth_headers).json()
     assert summary["total_opportunities"] == 1
     assert summary["high_match_opportunities"] == 1
+
+
+# ── 4. Sources can be run one at a time (proxy request-timeout workaround) ──
+
+
+def test_jobscout_accepts_a_single_source(client, auth_headers):
+    """Long sweeps exceed hosting proxy request limits; per-source keeps them short."""
+    r = client.post(
+        "/api/v1/agents/jobscout/run?force=true&sources=remoteok", headers=auth_headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sources_run"] <= 1
+
+
+def test_jobscout_accepts_several_named_sources(client, auth_headers):
+    r = client.post(
+        "/api/v1/agents/jobscout/run?force=true&sources=remoteok,arbeitnow",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sources_run"] <= 2
+
+
+def test_scholarshipscout_accepts_a_single_source(client, auth_headers):
+    r = client.post(
+        "/api/v1/agents/scholarshipscout/run?force=true&sources=scholarship_daad",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["sources_run"] <= 1
+
+
+def test_omitting_sources_still_runs_everything(client, auth_headers):
+    """Backwards compatible: no `sources` param means the full sweep."""
+    from app.api.routers.agents import _split_sources
+
+    assert _split_sources(None) is None
+    assert _split_sources("") is None
+    assert _split_sources("  ") is None
+    assert _split_sources("a, b ,,c") == ["a", "b", "c"]
