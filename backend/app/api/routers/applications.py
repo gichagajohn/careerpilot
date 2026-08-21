@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 
@@ -22,8 +23,15 @@ from app.models import (
     Scholarship,
     User,
 )
-from app.schemas.applications import ApplicationIn, ApplicationOut, ApplicationUpdate
+from app.schemas.applications import (
+    ApplicationIn,
+    ApplicationOut,
+    ApplicationUpdate,
+    BatchPrepResult,
+    ReviewItem,
+)
 from app.services.application_assistant import assist_application
+from app.services.batch_prep import prepare_batch
 
 logger = logging.getLogger("careerpilot.applications")
 
@@ -77,6 +85,78 @@ def create_application(
     db.commit()
     db.refresh(app)
     return app
+
+
+@router.post("/prepare-batch", response_model=BatchPrepResult)
+def prepare_batch_endpoint(
+    limit: int = 5,
+    min_score: float | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BatchPrepResult:
+    """Prepare several applications (CV + cover letter) ready for review.
+
+    Nothing is submitted. Each prepared application lands in the review queue
+    for the user to read and send themselves.
+    """
+    stats = prepare_batch(db, current_user, limit=limit, min_score=min_score)
+    return BatchPrepResult(**stats)
+
+
+@router.get("/review-queue", response_model=list[ReviewItem])
+def review_queue(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ReviewItem]:
+    """Applications prepared and waiting for the user to review and submit."""
+    rows = db.scalars(
+        select(Application)
+        .where(
+            Application.user_id == current_user.id,
+            Application.status.in_(["SHORTLISTED BY AGENT", "READY FOR REVIEW", "APPROVED"]),
+        )
+        .order_by(Application.priority_score.desc().nullslast(), Application.id.desc())
+    ).all()
+
+    items: list[ReviewItem] = []
+    for row in rows:
+        job = row.job
+        details = (job.match_details or {}) if job is not None else {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except ValueError:
+                details = {}
+        problems = [
+            e.description
+            for e in row.events
+            if e.event_type == "BATCH_INCOMPLETE" and e.description
+        ]
+        items.append(
+            ReviewItem(
+                application_id=row.id,
+                status=row.status,
+                title=job.title if job else None,
+                organization=job.organization_name if job else None,
+                location=job.location if job else None,
+                match_score=row.match_score,
+                eligibility=(job.eligibility if job else None),
+                deadline=row.deadline,
+                apply_url=(job.application_url or job.source_url) if job else None,
+                cv_docx=(f"/api/v1/cv/versions/{row.cv_version_id}/download-docx"
+                         if row.cv_version_id else None),
+                cv_pdf=(f"/api/v1/cv/versions/{row.cv_version_id}/download-pdf"
+                        if row.cv_version_id else None),
+                letter_docx=(f"/api/v1/cover-letters/{row.cover_letter_id}/download-docx"
+                             if row.cover_letter_id else None),
+                letter_pdf=(f"/api/v1/cover-letters/{row.cover_letter_id}/download-pdf"
+                            if row.cover_letter_id else None),
+                strengths=list(details.get("strengths") or [])[:4],
+                gaps=list(details.get("gaps") or [])[:4],
+                problems=problems,
+            )
+        )
+    return items
 
 
 @router.get("/{application_id}", response_model=ApplicationOut)
