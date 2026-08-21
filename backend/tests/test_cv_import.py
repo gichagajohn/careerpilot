@@ -239,3 +239,44 @@ def test_import_cv_extractions_are_unverified(client, auth_headers, db_session):
     rows = db_session.query(DocumentExtraction).filter_by(document_id=doc_id).all()
     assert rows
     assert all(r.status == "UNVERIFIED" for r in rows)
+
+
+# ── Section headings vary a lot between CVs ─────────────────────
+
+
+@pytest.mark.parametrize("heading", [
+    "KEY SKILLS", "SKILLS", "CORE COMPETENCIES", "AREAS OF EXPERTISE",
+    "PROFESSIONAL SKILLS", "CORE SKILLS", "SKILLS & ABILITIES",
+    "KEY SKILLS & COMPETENCIES", "TECHNICAL PROFICIENCIES", "Skills:", "Key Skills",
+])
+def test_skills_are_found_under_many_heading_styles(heading):
+    result = parse_cv(f"{heading}\nMathematics, Python, CBC Curriculum")
+    names = {s.name for s in result.skills}
+    assert {"Mathematics", "Python", "CBC Curriculum"} <= names, f"failed for {heading!r}"
+
+
+@pytest.mark.parametrize("heading", ["ACADEMIC QUALIFICATIONS", "EDUCATION", "Academic Background"])
+def test_education_found_under_many_heading_styles(heading):
+    result = parse_cv(f"{heading}\nBachelor of Education, Gretsa University, 2022 - 2025")
+    assert result.education
+
+
+@pytest.mark.parametrize("heading", ["WORK HISTORY", "EMPLOYMENT RECORD", "PROFESSIONAL BACKGROUND"])
+def test_experience_found_under_many_heading_styles(heading):
+    result = parse_cv(f"{heading}\nMaths Teacher, Huruma Girls, 2024 - Present")
+    assert result.experience
+
+
+def test_a_sentence_mentioning_skills_is_not_treated_as_a_heading():
+    """Guard against the keyword matcher swallowing body text."""
+    result = parse_cv(
+        "PROFESSIONAL SUMMARY\n"
+        "Skills gained during my teaching practice include classroom management.\n"
+        "I have strong competencies in curriculum design and assessment.\n"
+        "\n"
+        "KEY SKILLS\n"
+        "Mathematics, Python\n"
+    )
+    names = {s.name for s in result.skills}
+    assert names == {"Mathematics", "Python"}
+    assert "Skills gained during" in (result.profile.summary or "")
