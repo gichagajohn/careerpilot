@@ -75,3 +75,48 @@ class ApplicationOut(ApplicationIn):
     scholarship: ScholarshipOut | None = None
     events: list[ApplicationEventOut] = []
     answers: list[ApplicationAnswerOut] = []
+
+
+# ── Batch preparation / review queue ────────────────────────────
+
+
+class PreparedItem(BaseModel):
+    job_id: int
+    title: str | None = None
+    organization: str | None = None
+    match_score: float | None = None
+    application_id: int | None = None
+    cv_version_id: int | None = None
+    cover_letter_id: int | None = None
+    status: str
+    problems: list[str] = []
+
+
+class BatchPrepResult(BaseModel):
+    requested: int
+    min_score: float
+    candidates_found: int
+    prepared: int
+    incomplete: int
+    items: list[PreparedItem] = []
+
+
+class ReviewItem(BaseModel):
+    """One row of the review queue — everything needed to decide and submit."""
+
+    application_id: int
+    status: str
+    title: str | None = None
+    organization: str | None = None
+    location: str | None = None
+    match_score: float | None = None
+    eligibility: str | None = None
+    deadline: str | None = None
+    apply_url: str | None = None
+    cv_docx: str | None = None
+    cv_pdf: str | None = None
+    letter_docx: str | None = None
+    letter_pdf: str | None = None
+    strengths: list[str] = []
+    gaps: list[str] = []
+    problems: list[str] = []
