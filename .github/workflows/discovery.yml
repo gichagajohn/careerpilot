@@ -1,0 +1,141 @@
+name: Discovery agents
+
+# Runs JobScout, ScholarshipScout, the Verifier and the Matcher against the
+# deployed API, so the dashboard keeps filling up without the backend needing
+# to stay awake. The first request also wakes a sleeping Render free service.
+#
+# Times are UTC. Nairobi is UTC+3, so:
+#   05:00 UTC = 08:00 EAT   |   13:00 UTC = 16:00 EAT   |   21:00 UTC = 00:00 EAT
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   API_BASE_URL     e.g. https://careerpilot-api.onrender.com   (no trailing slash)
+#   API_EMAIL        the account the agents should run as
+#   API_PASSWORD     that account's password
+#
+# You can also run this on demand: Actions -> Discovery agents -> Run workflow.
+
+on:
+  schedule:
+    - cron: "0 5,13,21 * * *"
+  workflow_dispatch:
+    inputs:
+      scholarships:
+        description: "Also run ScholarshipScout (slower)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Run discovery pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      BASE: ${{ secrets.API_BASE_URL }}
+
+    steps:
+      - name: Check secrets are configured
+        run: |
+          missing=0
+          for name in API_BASE_URL API_EMAIL API_PASSWORD; do
+            case "$name" in
+              API_BASE_URL) value="${{ secrets.API_BASE_URL }}" ;;
+              API_EMAIL)    value="${{ secrets.API_EMAIL }}" ;;
+              API_PASSWORD) value="${{ secrets.API_PASSWORD }}" ;;
+            esac
+            if [ -z "$value" ]; then echo "::error::Missing repository secret: $name"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Wake the API and wait for it to be healthy
+        run: |
+          # A free Render service can take up to ~60s to cold start.
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$BASE/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "API healthy after ${attempt} attempt(s)"
+              exit 0
+            fi
+            echo "attempt ${attempt}: /health returned ${code:-no response}; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::API never became healthy at $BASE/health"
+          exit 1
+
+      - name: Log in
+        env:
+          EMAIL: ${{ secrets.API_EMAIL }}
+          PASSWORD: ${{ secrets.API_PASSWORD }}
+        run: |
+          payload=$(jq -nc --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p}')
+          body=$(curl -s --max-time 60 -X POST "$BASE/api/v1/auth/login" \
+                   -H 'Content-Type: application/json' -d "$payload")
+          token=$(printf '%s' "$body" | jq -r '.access_token // empty')
+          if [ -z "$token" ]; then
+            # Never print the body: it could echo back credentials.
+            echo "::error::Login failed. Check API_EMAIL / API_PASSWORD."
+            exit 1
+          fi
+          # Mask the token so it can never appear in logs.
+          echo "::add-mask::$token"
+          echo "TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: JobScout
+        id: jobscout
+        run: |
+          out=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/jobscout/run?force=true" \
+                  -H "Authorization: Bearer $TOKEN")
+          echo "$out" | jq .
+          echo "new_jobs=$(echo "$out" | jq -r '.new_jobs // 0')" >> "$GITHUB_OUTPUT"
+          echo "listings=$(echo "$out" | jq -r '.listings // 0')" >> "$GITHUB_OUTPUT"
+          sources=$(echo "$out" | jq -r '.sources_run // 0')
+          echo "sources=$sources" >> "$GITHUB_OUTPUT"
+          if [ "$sources" = "0" ]; then
+            echo "::warning::sources_run=0 — the deployed backend has no discovery sources."
+          fi
+
+      - name: ScholarshipScout
+        id: scholarships
+        if: github.event_name == 'schedule' || inputs.scholarships
+        run: |
+          out=$(curl -s --max-time 1500 -X POST "$BASE/api/v1/agents/scholarshipscout/run?force=true" \
+                  -H "Authorization: Bearer $TOKEN")
+          echo "$out" | jq .
+          echo "new=$(echo "$out" | jq -r '.new_scholarships // 0')" >> "$GITHUB_OUTPUT"
+
+      - name: Verify
+        run: |
+          curl -s --max-time 900 -X POST "$BASE/api/v1/agents/verify/run" \
+            -H "Authorization: Bearer $TOKEN" | jq .
+
+      - name: Match against the master profile
+        id: matcher
+        run: |
+          out=$(curl -s --max-time 900 -X POST "$BASE/api/v1/agents/matcher/run?force=true" \
+                  -H "Authorization: Bearer $TOKEN")
+          echo "$out" | jq .
+          errors=$(echo "$out" | jq -r '.errors | length')
+          if [ "$errors" != "0" ]; then
+            echo "::warning::Matcher reported: $(echo "$out" | jq -r '.errors | join("; ")')"
+          fi
+          echo "jobs=$(echo "$out" | jq -r '.jobs_scored // 0')" >> "$GITHUB_OUTPUT"
+          echo "schol=$(echo "$out" | jq -r '.scholarships_scored // 0')" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Discovery run"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Sources run | ${{ steps.jobscout.outputs.sources }} |"
+            echo "| Listings seen | ${{ steps.jobscout.outputs.listings }} |"
+            echo "| New jobs | ${{ steps.jobscout.outputs.new_jobs }} |"
+            echo "| New scholarships | ${{ steps.scholarships.outputs.new }} |"
+            echo "| Scored (jobs / scholarships) | ${{ steps.matcher.outputs.jobs }} / ${{ steps.matcher.outputs.schol }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
