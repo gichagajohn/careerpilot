@@ -17,6 +17,14 @@ from app.models import SearchSource, User
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+def _split_sources(value: str | None) -> list[str] | None:
+    """Parse a comma-separated ``sources`` query param into a list."""
+    if not value:
+        return None
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    return names or None
+
+
 class JobScoutRunResult(BaseModel):
     sources_run: int
     queries_run: int
@@ -69,22 +77,34 @@ class SearchSourceOut(BaseModel):
 @router.post("/jobscout/run", response_model=JobScoutRunResult)
 def trigger_jobscout(
     force: bool = True,
+    sources: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JobScoutRunResult:
-    """Manually run the JobScout discovery pipeline (defaults to force=True)."""
-    stats = run_job_scout(db, force=force)
+    """Manually run the JobScout discovery pipeline (defaults to force=True).
+
+    ``sources`` is an optional comma-separated list of source names
+    (e.g. ``remotive,remoteok``). Running one source per request keeps each
+    call short, which matters behind hosting proxies that cap request
+    duration — a full sweep can otherwise exceed the limit and be killed.
+    """
+    stats = run_job_scout(db, source_names=_split_sources(sources), force=force)
     return JobScoutRunResult(**stats)
 
 
 @router.post("/scholarshipscout/run", response_model=ScholarshipScoutRunResult)
 def trigger_scholarshipscout(
     force: bool = True,
+    sources: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ScholarshipScoutRunResult:
-    """Manually run the ScholarshipScout discovery pipeline."""
-    stats = run_scholarship_scout(db, force=force)
+    """Manually run the ScholarshipScout discovery pipeline.
+
+    ``sources`` is an optional comma-separated list of source names, so a
+    long sweep can be split across several short requests.
+    """
+    stats = run_scholarship_scout(db, source_names=_split_sources(sources), force=force)
     return ScholarshipScoutRunResult(**stats)
 
 
